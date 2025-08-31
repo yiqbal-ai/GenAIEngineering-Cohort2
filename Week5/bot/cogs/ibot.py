@@ -2,7 +2,7 @@
 
 from qdrant_client import QdrantClient
 from dotenv import load_dotenv  # For loading API key from a .env file
-# import google.generativeai as genai
+import google.generativeai as genai
 from langchain_qdrant import Qdrant  # Qdrant Vector Store Wrapper
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
@@ -24,7 +24,9 @@ from tqdm.auto import tqdm
 tqdm.pandas(desc="Processing DataFrame")
 config = load_config()
 
-OLLAMA_MODEL_NAME = 'llama3.2:latest'
+#OLLAMA_MODEL_NAME = 'llama3.2:latest'
+#OLLAMA_MODEL_NAME = 'phi3:mini'
+OLLAMA_MODEL_NAME = 'qwen3:0.6b'
 CLEANING_PATTERN = r'[^a-zA-Z0-9]'
 
 LLM_PERSONA = '''
@@ -172,7 +174,18 @@ def generate_metadata(search_query, o_client: ollama.Client):
             # 'stop_sequences': ['```json', '```']
         }
     ).response
+    
+    ##DBG
+    print("🧪 Raw response from Ollama for break_query():")
+    print(repr(resp))  # Shows hidden characters and empty string
 
+    try:
+        subqueries = json.loads(resp.strip().replace("'", '"'))
+    except json.JSONDecodeError as e:
+        print("❌ JSON decode failed in break_query():", e)
+        subqueries = [search_query]  # fallback to original query
+    ##DBG
+    
     try:
         metadata = json.loads(resp.split(
             'json')[1].strip().split('```')[0].strip())
@@ -383,7 +396,7 @@ class GenAIBot(commands.Cog):
     @nextcord.slash_command(
         guild_ids=[config['guild_id']],
         description="Execute Command")
-    async def raginator(
+    async def mind_bending(
             self,
             interaction: nextcord.Interaction,
             user_message: str
@@ -428,7 +441,7 @@ class GenAIBot(commands.Cog):
             similarity_threshold=0.1,
             flag_rewrite_query=True,
             flag_ai_metadata=False,
-            flag_break_query=True,
+            flag_break_query=False,
             flag_rerank_results=True,
         )
 
@@ -445,16 +458,46 @@ class GenAIBot(commands.Cog):
             ),
             stream=False,
         ).response
+        
+        final_prompt = PROMPT.format(
+            llm_persona=LLM_PERSONA,
+            objective_prompt=OBJECTIVE_PROMPT,
+            user_message=user_message,
+            chat_history=chat_history,
+            context=context,
+        )
+        print("✅ Prompt about to be sent to Ollama:")
+        print(final_prompt)
+
+        llm_response = ollama_client.generate(
+            model=OLLAMA_MODEL_NAME,
+            prompt=final_prompt,
+            stream=False,
+        ).response
+
+        print("📥 Got response from Ollama:")
+        print(llm_response)
 
         chat_messages.append({
             'role': 'assistant',
             'content': llm_response,
         })
 
+        #await interaction.followup.send(
+        #    content=llm_response,
+        #    delete_after=300
+        #)
+        print("Sending response to Discord...")
+        # Ensure reply is short enough (Discord max: 2000 characters)
+        safe_response = llm_response[:1900] if llm_response else "No response generated."
+
         await interaction.followup.send(
-            content=llm_response,
-            delete_after=300
+            content=safe_response,
+            ephemeral=True,   # Optional: hides message from other users
+            wait=True         # Ensures message is processed correctly
         )
+        print(safe_response)
+
 
 
 def setup(bot):
